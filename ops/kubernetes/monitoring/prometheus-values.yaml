@@ -1,0 +1,75 @@
+# ops/kubernetes/monitoring/prometheus-values.yaml
+server:
+  global:
+    scrape_interval: 15s
+    evaluation_interval: 15s
+  
+  persistentVolume:
+    enabled: true
+    size: 50Gi
+  
+  resources:
+    requests:
+      memory: 4Gi
+      cpu: 2
+    limits:
+      memory: 8Gi
+      cpu: 4
+  
+  alerting:
+    alertmanagers:
+      - static_configs:
+          - targets:
+            - alertmanager:9093
+
+alertmanager:
+  enabled: true
+  config:
+    global:
+      slack_api_url: '${SLACK_WEBHOOK_URL}'
+    route:
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: 'slack-notifications'
+    receivers:
+      - name: 'slack-notifications'
+        slack_configs:
+          - channel: '#alerts'
+            send_resolved: true
+
+grafana:
+  enabled: true
+  adminPassword: ${GRAFANA_PASSWORD}
+  persistence:
+    enabled: true
+    size: 10Gi
+  
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: ''
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/default
+  
+  dashboards:
+    default:
+      skypay-dashboard:
+        gnetId: 0
+        datasource: Prometheus
+        url: https://raw.githubusercontent.com/skypay/monitoring/main/dashboards/skypay.json
+  
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 1Gi
+      cpu: 1

@@ -1,0 +1,118 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: skypay-postgres
+    environment:
+      POSTGRES_DB: skypay
+      POSTGRES_USER: skypay
+      POSTGRES_PASSWORD: skypay123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skypay"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - skypay-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: skypay-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --requirepass redis123
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - skypay-network
+
+  backend:
+    build:
+      context: ./skypay-backend
+      dockerfile: Dockerfile.dev
+    container_name: skypay-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://skypay:skypay123@postgres:5432/skypay
+      REDIS_URL: redis://:redis123@redis:6379
+      JWT_SECRET: development_jwt_secret_key_2023
+      ENCRYPTION_KEY: 32charactersonlyfordevelopment
+      ENCRYPTION_IV: 16charsfordevonly
+      BRIDGE_BASE_URL: https://sandbox.bridge.com
+      CORS_ORIGINS: http://localhost:3000,http://localhost:3002
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./skypay-backend:/app
+      - /app/node_modules
+    command: npm run dev
+    networks:
+      - skypay-network
+
+  web-app:
+    build:
+      context: ./skypay-web-app
+      dockerfile: Dockerfile.dev
+    container_name: skypay-web-app
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_WS_URL: ws://localhost:3001
+      NEXT_PUBLIC_ENVIRONMENT: development
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./skypay-web-app:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+    networks:
+      - skypay-network
+
+  contracts:
+    build:
+      context: ./skypay-contracts
+      dockerfile: Dockerfile
+    container_name: skypay-contracts
+    ports:
+      - "8545:8545"
+    volumes:
+      - ./skypay-contracts:/app
+    command: npx hardhat node --hostname 0.0.0.0
+    networks:
+      - skypay-network
+
+  mailhog:
+    image: mailhog/mailhog
+    container_name: skypay-mailhog
+    ports:
+      - "8025:8025" # Web UI
+      - "1025:1025" # SMTP server
+    networks:
+      - skypay-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  skypay-network:
+    driver: bridge

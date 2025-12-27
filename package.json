@@ -1,0 +1,29 @@
+{
+  "name": "skypay-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "skypay-backend",
+    "skypay-contracts",
+    "skypay-sdk",
+    "skypay-web-app",
+    "skypay-mobile"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev:*\"",
+    "dev:backend": "npm run dev --workspace=skypay-backend",
+    "dev:web": "npm run dev --workspace=skypay-web-app",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "deploy:contracts": "npm run deploy --workspace=skypay-contracts",
+    "deploy:backend": "npm run deploy --workspace=skypay-backend",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up",
+    "docker:down": "docker-compose down"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "concurrently": "^8.2.2",
+    "typescript": "^5.9.3"
+  }
+}

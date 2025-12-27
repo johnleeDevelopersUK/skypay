@@ -1,0 +1,499 @@
+// skypay-backend/prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Core Entities
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  phone             String?   @unique
+  walletAddress     String?   @unique
+  firstName         String?
+  lastName          String?
+  avatar            String?
+  country           String?
+  language          String    @default("en")
+  
+  // Status
+  status            UserStatus @default(PENDING)
+  verificationLevel VerificationLevel @default(BASIC)
+  riskScore         Float     @default(0)
+  riskLevel         RiskLevel @default(LOW)
+  
+  // Limits
+  dailyLimit        Decimal   @default(1000) @db.Decimal(20, 2)
+  monthlyLimit      Decimal   @default(5000) @db.Decimal(20, 2)
+  dailySpent        Decimal   @default(0) @db.Decimal(20, 2)
+  monthlySpent      Decimal   @default(0) @db.Decimal(20, 2)
+  
+  // Security
+  passwordHash      String?
+  twoFactorEnabled  Boolean   @default(false)
+  twoFactorSecret   String?
+  recoveryPhrase    String?   @encrypted
+  
+  // Timestamps
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  lastLogin         DateTime?
+  lastActivity      DateTime?
+  
+  // Relations
+  accounts          Account[]
+  kycSubmissions    KYCSubmission[]
+  settlements       Settlement[]
+  transactions      Transaction[]
+  complianceChecks  ComplianceCheck[]
+  auditLogs         AuditLog[]
+  
+  // Indexes
+  @@index([email])
+  @@index([walletAddress])
+  @@index([country])
+  @@index([status])
+}
+
+model Account {
+  id              String    @id @default(cuid())
+  userId          String
+  type            AccountType @default(FIAT)
+  currency        String    // USD, NGN, EUR, USST, NairaX, EuroPal
+  balance         Decimal   @default(0) @db.Decimal(20, 2)
+  available       Decimal   @default(0) @db.Decimal(20, 2)
+  pending         Decimal   @default(0) @db.Decimal(20, 2)
+  frozen          Boolean   @default(false)
+  
+  // Provider references
+  provider        String?   // BRIDGE, PAYSTACK, etc
+  providerAccountId String?
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // Relations
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ledgerEntries   LedgerEntry[]
+  
+  // Indexes
+  @@unique([userId, type, currency])
+  @@index([userId])
+  @@index([type, currency])
+}
+
+// Ledger System
+model LedgerEntry {
+  id              String    @id @default(cuid())
+  accountId       String
+  type            LedgerEntryType
+  amount          Decimal   @db.Decimal(20, 2)
+  currency        String
+  direction       Direction
+  status          LedgerStatus @default(PENDING)
+  
+  // References
+  referenceId     String?   // External reference (bridge_transaction_id, onchain_tx_hash)
+  settlementId    String?
+  transactionId   String?
+  
+  // Metadata
+  metadata        Json      @default("{}")
+  description     String?
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  settledAt       DateTime?
+  
+  // Relations
+  account         Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  settlement      Settlement? @relation(fields: [settlementId], references: [id])
+  transaction     Transaction? @relation(fields: [transactionId], references: [id])
+  
+  // Indexes
+  @@index([accountId])
+  @@index([referenceId])
+  @@index([settlementId])
+  @@index([createdAt])
+  @@index([type, status])
+}
+
+// Settlement State Machine
+model Settlement {
+  id              String    @id @default(cuid())
+  type            SettlementType
+  currentState    SettlementState
+  previousState   SettlementState?
+  
+  // Participants
+  userId          String
+  sourceAccountId String?
+  targetAccountId String?
+  
+  // Amounts
+  sourceAmount    Decimal   @db.Decimal(20, 2)
+  sourceCurrency  String
+  targetAmount    Decimal   @db.Decimal(20, 2)
+  targetCurrency  String
+  
+  // Provider
+  provider        String    // BRIDGE, PAYSTACK, etc
+  providerReference String?
+  
+  // Compliance
+  complianceCheckId String?
+  riskScore       Float?
+  riskLevel       RiskLevel?
+  
+  // Metadata
+  metadata        Json      @default("{}")
+  failureReason   String?
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?
+  failedAt        DateTime?
+  expiredAt       DateTime?
+  
+  // Relations
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceAccount   Account?  @relation("SourceAccount", fields: [sourceAccountId], references: [id])
+  targetAccount   Account?  @relation("TargetAccount", fields: [targetAccountId], references: [id])
+  ledgerEntries   LedgerEntry[]
+  transactions    Transaction[]
+  complianceCheck ComplianceCheck? @relation(fields: [complianceCheckId], references: [id])
+  stateHistory    SettlementStateHistory[]
+  
+  // Indexes
+  @@index([userId])
+  @@index([type])
+  @@index([currentState])
+  @@index([provider, providerReference])
+  @@index([createdAt])
+}
+
+model SettlementStateHistory {
+  id              String    @id @default(cuid())
+  settlementId    String
+  fromState       SettlementState?
+  toState         SettlementState
+  reason          String?
+  metadata        Json      @default("{}")
+  timestamp       DateTime  @default(now())
+  
+  // Relations
+  settlement      Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  
+  // Indexes
+  @@index([settlementId])
+  @@index([timestamp])
+}
+
+// KYC & Compliance
+model KYCSubmission {
+  id              String    @id @default(cuid())
+  userId          String
+  type            KYCType   @default(BASIC)
+  status          KYCStatus @default(PENDING)
+  
+  // Documents
+  documentType    String?   // PASSPORT, DRIVERS_LICENSE, etc
+  documentFront   String?   // URL or encrypted path
+  documentBack    String?   // URL or encrypted path
+  selfie          String?   // URL or encrypted path
+  
+  // Data
+  personalInfo    Json      @encrypted
+  extractedData   Json      @default("{}")
+  
+  // Verification
+  verifiedBy      String?   // SYSTEM or admin ID
+  verificationScore Float?
+  verificationNotes String?
+  
+  // Provider integration
+  provider        String?   // SUMSUB, JUMIO, etc
+  providerReference String?
+  providerData    Json      @default("{}")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  submittedAt     DateTime?
+  verifiedAt      DateTime?
+  expiredAt       DateTime?
+  
+  // Relations
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Indexes
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ComplianceCheck {
+  id              String    @id @default(cuid())
+  type            ComplianceCheckType
+  userId          String?
+  settlementId    String?
+  transactionId   String?
+  
+  // Results
+  status          ComplianceStatus @default(PENDING)
+  riskScore       Float
+  riskLevel       RiskLevel
+  approved        Boolean
+  reason          String?
+  
+  // Provider results
+  provider        String
+  providerReference String?
+  providerData    Json      @default("{}")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?
+  
+  // Relations
+  user            User?     @relation(fields: [userId], references: [id])
+  settlement      Settlement? @relation(fields: [settlementId], references: [id])
+  transaction     Transaction? @relation(fields: [transactionId], references: [id])
+  
+  // Indexes
+  @@index([userId])
+  @@index([settlementId])
+  @@index([type, status])
+}
+
+// Transactions
+model Transaction {
+  id              String    @id @default(cuid())
+  type            TransactionType
+  userId          String
+  settlementId    String?
+  
+  // Amounts
+  amount          Decimal   @db.Decimal(20, 2)
+  currency        String
+  feeAmount       Decimal   @default(0) @db.Decimal(20, 2)
+  netAmount       Decimal   @db.Decimal(20, 2)
+  
+  // Participants
+  fromAccountId   String?
+  toAccountId     String?
+  fromAddress     String?
+  toAddress       String?
+  
+  // Blockchain
+  chainId         Int?
+  txHash          String?   @unique
+  blockNumber     Int?
+  blockTimestamp  DateTime?
+  
+  // Status
+  status          TransactionStatus @default(PENDING)
+  failureReason   String?
+  
+  // Metadata
+  metadata        Json      @default("{}")
+  description     String?
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?
+  failedAt        DateTime?
+  
+  // Relations
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  settlement      Settlement? @relation(fields: [settlementId], references: [id])
+  fromAccount     Account?  @relation("FromAccount", fields: [fromAccountId], references: [id])
+  toAccount       Account?  @relation("ToAccount", fields: [toAccountId], references: [id])
+  ledgerEntries   LedgerEntry[]
+  complianceChecks ComplianceCheck[]
+  
+  // Indexes
+  @@index([userId])
+  @@index([settlementId])
+  @@index([txHash])
+  @@index([type, status])
+  @@index([createdAt])
+}
+
+// Audit Logging
+model AuditLog {
+  id              String    @id @default(cuid())
+  type            AuditLogType
+  userId          String?
+  userEmail       String?
+  ipAddress       String?
+  userAgent       String?
+  
+  // Entity reference
+  entityType      String?   // USER, SETTLEMENT, TRANSACTION, etc
+  entityId        String?
+  
+  // Changes
+  beforeState     Json      @default("{}")
+  afterState      Json      @default("{}")
+  changes         Json      @default("{}")
+  
+  // Metadata
+  metadata        Json      @default("{}")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  
+  // Relations
+  user            User?     @relation(fields: [userId], references: [id])
+  
+  // Indexes
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// Enums
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+  BANNED
+}
+
+enum VerificationLevel {
+  BASIC
+  TIER_1
+  TIER_2
+  TIER_3
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AccountType {
+  FIAT
+  TOKEN
+  HYBRID
+}
+
+enum LedgerEntryType {
+  DEPOSIT
+  WITHDRAWAL
+  TRANSFER
+  MINT
+  BURN
+  FEE
+  INTEREST
+  REVERSAL
+}
+
+enum Direction {
+  CREDIT
+  DEBIT
+}
+
+enum LedgerStatus {
+  PENDING
+  SETTLED
+  FAILED
+  REVERSED
+}
+
+enum SettlementType {
+  FIAT_TO_TOKEN
+  TOKEN_TO_FIAT
+  CROSS_BORDER
+  INTERNAL_TRANSFER
+}
+
+enum SettlementState {
+  INITIATED
+  FIAT_RECEIVED
+  FIAT_CONFIRMED
+  TOKEN_MINTED
+  TOKEN_DELIVERED
+  SETTLED
+  TOKEN_LOCKED
+  TOKEN_BURNED
+  FIAT_REQUESTED
+  FIAT_SENT
+  CONFIRMED
+  FAILED
+  REVERSED
+  EXPIRED
+}
+
+enum KYCType {
+  BASIC
+  ENHANCED
+  INSTITUTIONAL
+}
+
+enum KYCStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum ComplianceCheckType {
+  KYC_VERIFICATION
+  AML_SCREENING
+  TRANSACTION_MONITORING
+  SANCTIONS_CHECK
+  PEP_CHECK
+}
+
+enum ComplianceStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  TRANSFER
+  SWAP
+  CROSS_CHAIN
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AuditLogType {
+  USER_LOGIN
+  USER_LOGOUT
+  USER_CREATED
+  USER_UPDATED
+  SETTLEMENT_CREATED
+  SETTLEMENT_UPDATED
+  TRANSACTION_CREATED
+  TRANSACTION_UPDATED
+  COMPLIANCE_CHECK
+  ADMIN_ACTION
+  SYSTEM_EVENT
+}
